@@ -1,0 +1,56 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    name: build (${{ matrix.arch }})
+    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x64]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Configure MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: ${{ matrix.arch }}
+
+      - name: Install deps
+        run: npm ci || npm install
+
+      - name: Build native (Node ABI)
+        run: npx cmake-js compile --arch=${{ matrix.arch }} --CDWINCAP_ENABLE_WERROR=ON
+
+      - name: Build TypeScript
+        run: npm run build:ts
+
+      - name: Smoke test
+        run: node -e "const w = require('./'); console.log(w.version()); console.log(w.getCapabilities());"
+
+  prebuilds:
+    name: prebuilds
+    runs-on: windows-2022
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: ilammy/msvc-dev-cmd@v1
+      - run: npm ci || npm install
+      - run: node scripts/prebuild.js
+      - uses: actions/upload-artifact@v4
+        with:
+          name: prebuilds
+          path: prebuilds/

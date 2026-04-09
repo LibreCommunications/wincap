@@ -1,0 +1,13 @@
+node_modules/
+dist/
+build/
+prebuilds/
+*.node
+*.tsbuildinfo
+.vs/
+.vscode/
+*.user
+*.suo
+*.pdb
+*.ilk
+.cache/

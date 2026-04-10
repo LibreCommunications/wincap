@@ -14,7 +14,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "build:native": "cmake-js compile --runtime=electron --runtime-version=41.1.0 --arch=x64",
+    "build:native": "cmake-js compile --runtime=electron --runtime-version=41.1.1 --arch=x64",
     "build:native:node": "cmake-js compile --arch=x64",
     "build:ts": "tsc -p tsconfig.json",
     "build": "npm run build:native && npm run build:ts",

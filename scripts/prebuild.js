@@ -8,7 +8,7 @@ const { spawnSync } = require('node:child_process');
 const TARGETS = [
   { runtime: 'node', target: '20.18.0' },
   { runtime: 'node', target: '22.11.0' },
-  { runtime: 'electron', target: '41.1.0' }, // LibreCord
+  { runtime: 'electron', target: '41.1.1' }, // LibreCord
   { runtime: 'electron', target: '34.0.0' },
 ];
 

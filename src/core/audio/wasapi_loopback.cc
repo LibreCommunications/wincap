@@ -43,7 +43,6 @@ public:
 } // namespace
 
 WasapiLoopback::WasapiLoopback(WasapiLoopbackOptions opts) : opts_(opts) {
-    pool_.resize(kPoolSize);
     for (auto& b : pool_) b.owner = this;
 }
 

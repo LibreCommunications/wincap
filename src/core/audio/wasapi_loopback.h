@@ -12,9 +12,11 @@
 #include "core/audio/iaudio_source.h"
 #include "core/audio/format.h"
 
+#include <array>
 #include <atomic>
 #include <cstdint>
 #include <thread>
+
 #include <vector>
 
 // windows.h must precede the WASAPI / mmreg headers (they depend on
@@ -63,6 +65,10 @@ private:
         std::vector<float>          data;
         std::atomic<std::uint32_t>  in_use{0};
         WasapiLoopback*             owner{nullptr};
+
+        PoolBuffer() = default;
+        PoolBuffer(const PoolBuffer&) = delete;
+        PoolBuffer& operator=(const PoolBuffer&) = delete;
     };
     PoolBuffer* AcquireBuffer(std::size_t needed_floats) noexcept;
 
@@ -81,7 +87,7 @@ private:
     AudioErrorCallback err_cb_;
 
     static constexpr std::size_t kPoolSize = 16;
-    std::vector<PoolBuffer> pool_{};
+    std::array<PoolBuffer, kPoolSize> pool_{};
 };
 
 } // namespace wincap

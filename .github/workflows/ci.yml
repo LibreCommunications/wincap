@@ -8,7 +8,7 @@ on:
 jobs:
   build:
     name: build (${{ matrix.arch }})
-    runs-on: windows-2022
+    runs-on: windows-2025
     strategy:
       fail-fast: false
       matrix:
@@ -18,7 +18,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: '24'
 
       - name: Configure MSVC
         uses: ilammy/msvc-dev-cmd@v1
@@ -42,20 +42,3 @@ jobs:
           Write-Host "Found addon: $($addon.FullName)"
           node -e "const w = require('$($addon.FullName -replace '\\','/')'); console.log(w.version()); console.log(JSON.stringify(w.getCapabilities()));"
 
-  prebuilds:
-    name: prebuilds
-    runs-on: windows-2022
-    needs: build
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-      - uses: ilammy/msvc-dev-cmd@v1
-      - run: npm install --no-audit --no-fund
-      - run: node scripts/prebuild.js
-      - uses: actions/upload-artifact@v4
-        with:
-          name: prebuilds
-          path: prebuilds/

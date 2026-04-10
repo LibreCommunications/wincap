@@ -1,5 +1,5 @@
 {
-  "name": "@librecommunications/wincap",
+  "name": "@librecord/wincap",
   "version": "0.0.1",
   "description": "Native Windows screen capture with audio for Electron — WGC + WASAPI loopback (C++/N-API)",
   "main": "dist/index.js",

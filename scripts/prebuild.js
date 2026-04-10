@@ -5,14 +5,13 @@
 
 const { spawnSync } = require('node:child_process');
 
+// wincap exists to power LibreCord. We only ship the ABI LibreCord
+// actually uses; add more entries here when LibreCord moves.
 const TARGETS = [
-  { runtime: 'node', target: '20.18.0' },
-  { runtime: 'node', target: '22.11.0' },
-  { runtime: 'electron', target: '41.1.1' }, // LibreCord
-  { runtime: 'electron', target: '34.0.0' },
+  { runtime: 'electron', target: '41.1.1' },
 ];
 
-const ARCHES = ['x64', 'arm64'];
+const ARCHES = ['x64'];
 
 for (const arch of ARCHES) {
   for (const t of TARGETS) {

@@ -8,6 +8,10 @@
 #include <cstring>
 #include <utility>
 
+// RuntimeClass / RuntimeClassFlags / ClassicCom / FtmBase / Make live
+// in wrl/implements.h, not wrl/client.h.
+#include <wrl/implements.h>
+
 #include <audioclientactivationparams.h>
 #include <mmdeviceapi.h>
 #include <functiondiscoverykeys_devpkey.h>

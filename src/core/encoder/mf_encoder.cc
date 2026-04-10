@@ -7,8 +7,10 @@
 #include <string>
 
 #include <mferror.h>
-#include <wmcodecdsp.h>
 #include <dxgi1_6.h>
+// NB: do NOT include <wmcodecdsp.h> here — it transitively pulls
+// <strmif.h> which redefines CodecAPIEventData already declared by
+// <icodecapi.h>.
 
 #pragma comment(lib, "mfplat.lib")
 #pragma comment(lib, "mfuuid.lib")
@@ -211,8 +213,9 @@ void MfEncoder::Initialize(ID3D11Device5* device, const EncoderConfig& cfg) {
         SetUInt32(api, CODECAPI_AVEncNumWorkerThreads, 0); // driver chooses
     }
 
-    // 8. Event generator for async event delivery.
+    // 8. Event generator for async event delivery + callback wrapper.
     WINCAP_THROW_IF_FAILED("mf_encoder", mft_.As(&event_gen_));
+    callback_ = Microsoft::WRL::Make<AsyncCallback>(this);
 }
 
 void MfEncoder::Start(EncodedCallback out, EncoderErrorCallback err) {
@@ -226,11 +229,12 @@ void MfEncoder::Start(EncodedCallback out, EncoderErrorCallback err) {
         mft_->ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0));
 
     WINCAP_THROW_IF_FAILED("mf_encoder",
-        event_gen_->BeginGetEvent(this, nullptr));
+        event_gen_->BeginGetEvent(callback_.Get(), nullptr));
 }
 
 void MfEncoder::Stop() {
     if (!running_.exchange(false)) return;
+    if (callback_) callback_->Detach();
     if (mft_) {
         mft_->ProcessMessage(MFT_MESSAGE_NOTIFY_END_OF_STREAM, 0);
         mft_->ProcessMessage(MFT_MESSAGE_NOTIFY_END_STREAMING, 0);
@@ -267,20 +271,14 @@ void MfEncoder::SetBitrate(std::uint32_t bps) {
     SetUInt32(codec_api_.Get(), CODECAPI_AVEncCommonMeanBitRate, bps);
 }
 
-STDMETHODIMP MfEncoder::GetParameters(DWORD* flags, DWORD* queue) {
-    if (flags) *flags = 0;
-    if (queue) *queue = 0;
-    return E_NOTIMPL;
-}
-
-STDMETHODIMP MfEncoder::Invoke(IMFAsyncResult* result) {
-    if (!running_.load(std::memory_order_acquire) || !event_gen_) return S_OK;
+void MfEncoder::Invoke(IMFAsyncResult* result) {
+    if (!running_.load(std::memory_order_acquire) || !event_gen_) return;
 
     Microsoft::WRL::ComPtr<IMFMediaEvent> evt;
     HRESULT hr = event_gen_->EndGetEvent(result, evt.GetAddressOf());
     if (FAILED(hr)) {
         if (on_error_) on_error_("mf_encoder", hr, "EndGetEvent failed");
-        return S_OK;
+        return;
     }
 
     MediaEventType type = MEUnknown;
@@ -294,9 +292,8 @@ STDMETHODIMP MfEncoder::Invoke(IMFAsyncResult* result) {
     }
 
     if (running_.load(std::memory_order_acquire)) {
-        event_gen_->BeginGetEvent(this, nullptr);
+        event_gen_->BeginGetEvent(callback_.Get(), nullptr);
     }
-    return S_OK;
 }
 
 void MfEncoder::OnNeedInput() {
@@ -399,7 +396,5 @@ void MfEncoder::OnHaveOutput() {
 
     buf->Unlock();
 }
-
-void MfEncoder::DrainOutputUnsafe() { /* unused */ }
 
 } // namespace wincap

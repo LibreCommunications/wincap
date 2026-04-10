@@ -22,6 +22,7 @@
 
 #include <wrl/client.h>
 #include <wrl/implements.h>
+#include <wrl/wrappers/corewrappers.h>
 
 #include <mfapi.h>
 #include <mfidl.h>
@@ -31,12 +32,7 @@
 
 namespace wincap {
 
-class MfEncoder final
-    : public IEncoder,
-      public Microsoft::WRL::RuntimeClass<
-          Microsoft::WRL::RuntimeClassFlags<Microsoft::WRL::ClassicCom>,
-          Microsoft::WRL::FtmBase,
-          IMFAsyncCallback> {
+class MfEncoder final : public IEncoder {
 public:
     MfEncoder();
     ~MfEncoder() override;
@@ -51,15 +47,36 @@ public:
     void RequestKeyframe() override;
     void SetBitrate(std::uint32_t bps) override;
 
-    // IMFAsyncCallback — invoked by the MFT's event generator on an MF
-    // work queue thread.
-    STDMETHODIMP GetParameters(DWORD* flags, DWORD* queue) override;
-    STDMETHODIMP Invoke(IMFAsyncResult* result) override;
-
 private:
+    // Async callback wrapper. WRL RuntimeClass deletes operator new to
+    // force Make<>(); keeping it as a separate inner class lets MfEncoder
+    // itself remain a plain type usable with std::make_unique.
+    class AsyncCallback
+        : public Microsoft::WRL::RuntimeClass<
+              Microsoft::WRL::RuntimeClassFlags<Microsoft::WRL::ClassicCom>,
+              Microsoft::WRL::FtmBase,
+              IMFAsyncCallback> {
+    public:
+        explicit AsyncCallback(MfEncoder* outer) noexcept : outer_(outer) {}
+        void Detach() noexcept { outer_ = nullptr; }
+
+        STDMETHODIMP GetParameters(DWORD* flags, DWORD* queue) override {
+            if (flags) *flags = 0;
+            if (queue) *queue = 0;
+            return E_NOTIMPL;
+        }
+        STDMETHODIMP Invoke(IMFAsyncResult* result) override {
+            if (outer_) outer_->Invoke(result);
+            return S_OK;
+        }
+
+    private:
+        MfEncoder* outer_;
+    };
+
+    void Invoke(IMFAsyncResult* result);
     void OnNeedInput();
     void OnHaveOutput();
-    void DrainOutputUnsafe();
 
     EncoderConfig                                   cfg_{};
     Microsoft::WRL::ComPtr<ID3D11Device5>           device_;
@@ -68,6 +85,7 @@ private:
     Microsoft::WRL::ComPtr<ICodecAPI>               codec_api_;
     Microsoft::WRL::ComPtr<IMFDXGIDeviceManager>    dxgi_manager_;
     UINT                                            dxgi_token_{0};
+    Microsoft::WRL::ComPtr<AsyncCallback>           callback_;
 
     EncodedCallback        on_output_;
     EncoderErrorCallback   on_error_;

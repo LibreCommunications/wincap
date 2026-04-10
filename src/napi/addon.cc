@@ -37,4 +37,11 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
 
 } // namespace wincap
 
-NODE_API_MODULE(wincap, wincap::Init)
+// NODE_API_MODULE pastes the regfunc name into an identifier
+// (`__napi_##regfunc`), so it cannot be a namespace-qualified name.
+// Wrap with a top-level free function.
+static Napi::Object WincapInit(Napi::Env env, Napi::Object exports) {
+    return wincap::Init(env, exports);
+}
+
+NODE_API_MODULE(wincap, WincapInit)

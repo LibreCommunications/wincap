@@ -43,12 +43,17 @@ set(WINCAP_CORE_SOURCES
     src/core/common/mmcss.cc
     src/core/common/errors.cc
     src/core/gfx/d3d_device.cc
+    src/core/gfx/video_processor.cc
     src/core/capture/wgc_source.cc
+    src/core/audio/format.cc
+    src/core/audio/wasapi_loopback.cc
+    src/core/encoder/mf_encoder.cc
 )
 
 set(WINCAP_NAPI_SOURCES
     src/napi/addon.cc
     src/napi/capture_session.cc
+    src/napi/audio_session.cc
     src/napi/sources.cc
     src/napi/tsfn.cc
 )
@@ -82,6 +87,11 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     runtimeobject     # RoGetActivationFactory etc.
     avrt              # MMCSS
     mmdevapi
+    mfplat            # Media Foundation
+    mf
+    mfuuid
+    wmcodecdspuuid
+    ksuser            # KSDATAFORMAT_SUBTYPE_*
     ole32
     oleaut32
     uuid

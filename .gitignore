@@ -6,6 +6,7 @@ prebuilds/
 *.tsbuildinfo
 .vs/
 .vscode/
+.idea/
 *.user
 *.suo
 *.pdb

@@ -1,3 +1,4 @@
+#include "napi/audio_session.h"
 #include "napi/capture_session.h"
 #include "napi/sources.h"
 
@@ -30,6 +31,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set("getCapabilities", Napi::Function::New(env, GetCapabilities));
 
     CaptureSession::Init(env, exports);
+    AudioSession::Init(env, exports);
     return exports;
 }
 

@@ -1,11 +1,9 @@
 // Public TypeScript types for @librecommunications/wincap.
-// Mirrors pipecap's shape where reasonable.
 
 export type SourceKind = 'display' | 'window';
 
 export interface DisplaySource {
   kind: 'display';
-  /** Win32 HMONITOR — pass back when starting a CaptureSession. */
   monitorHandle: bigint;
   name: string;
   primary: boolean;
@@ -14,7 +12,6 @@ export interface DisplaySource {
 
 export interface WindowSource {
   kind: 'window';
-  /** Win32 HWND. */
   hwnd: bigint;
   title: string;
   pid: number;
@@ -31,14 +28,25 @@ export interface Rect {
 }
 
 export type PixelFormat = 'bgra8' | 'nv12' | 'p010';
+export type VideoCodec = 'h264' | 'hevc' | 'av1';
+
+export type DeliveryMode =
+  | { type: 'raw' }
+  | {
+      type: 'encoded';
+      codec?: VideoCodec;
+      bitrateBps?: number;
+      fps?: number;
+      keyframeIntervalMs?: number;
+    };
 
 export interface CaptureOptions {
-  source: { kind: 'display'; monitorHandle: bigint }
-        | { kind: 'window';  hwnd: bigint };
-  /** Soft FPS cap. 0 = uncapped (vsync-driven). Default: 0. */
+  source:
+    | { kind: 'display'; monitorHandle: bigint }
+    | { kind: 'window'; hwnd: bigint };
+  delivery?: DeliveryMode;
   fps?: number;
   includeCursor?: boolean;
-  /** Show the WGC yellow border. Win11 22H2+ allows `false`. */
   borderRequired?: boolean;
 }
 
@@ -48,14 +56,50 @@ export interface VideoFrame {
   height: number;
   format: PixelFormat;
   sizeChanged: boolean;
-  /** MUST be called when the consumer is done with the frame. */
   release(): void;
+}
+
+export interface EncodedFrame {
+  /** One or more concatenated NAL units. */
+  data: ArrayBuffer;
+  timestampNs: bigint;
+  keyframe: boolean;
 }
 
 export interface CaptureStats {
   deliveredFrames: bigint;
   droppedFrames: bigint;
+  encodedUnits: bigint;
 }
+
+// ----- Audio -----
+
+export type AudioMode =
+  | { mode: 'systemLoopback' }
+  | { mode: 'processLoopback'; pid: number; includeTree?: boolean };
+
+export type AudioOptions = AudioMode;
+
+export interface AudioChunk {
+  timestampNs: bigint;
+  frameCount: number;
+  sampleRate: number;
+  channels: number;
+  format: 'float32';
+  silent: boolean;
+  discontinuity: boolean;
+  /** Interleaved float32 samples. Backed by the native pool — copy if
+   *  you need to keep it past the listener invocation. */
+  data: ArrayBuffer;
+}
+
+export interface AudioStats {
+  deliveredChunks: bigint;
+  droppedChunks: bigint;
+  discontinuities: bigint;
+}
+
+// ----- Capabilities / errors -----
 
 export interface Capabilities {
   wgc: boolean;

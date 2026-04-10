@@ -32,12 +32,22 @@ export type VideoCodec = 'h264' | 'hevc' | 'av1';
 
 export type DeliveryMode =
   | { type: 'raw' }
+  | { type: 'cpu' }
   | {
       type: 'encoded';
       codec?: VideoCodec;
       bitrateBps?: number;
       fps?: number;
       keyframeIntervalMs?: number;
+      /** HDR10 / Main10 — requires HEVC or AV1. */
+      hdr10?: boolean;
+      /** Long-term reference frame buffer count (RTC packet-loss recovery). */
+      ltrCount?: number;
+      /** Spread I-block coverage instead of emitting full IDRs. */
+      intraRefresh?: boolean;
+      intraRefreshPeriod?: number;
+      /** Enable per-frame ROI metadata (dirty-rect quality boost). */
+      roiEnabled?: boolean;
     };
 
 export interface CaptureOptions {
@@ -55,8 +65,16 @@ export interface VideoFrame {
   width: number;
   height: number;
   format: PixelFormat;
-  sizeChanged: boolean;
-  release(): void;
+  sizeChanged?: boolean;
+  /** Row pitch in bytes (CPU delivery only). */
+  stride?: number;
+  /** Pixel data (CPU delivery only). Backed by mapped staging memory —
+   *  do NOT retain past listener invocation; let the ArrayBuffer GC. */
+  data?: ArrayBuffer;
+  /** Metadata-only delivery exposes a release() to recycle the slot. */
+  release?: () => void;
+  /** Dirty regions reported by the source (24H2+), if any. */
+  dirtyRects?: ReadonlyArray<Rect>;
 }
 
 export interface EncodedFrame {

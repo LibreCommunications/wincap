@@ -23,7 +23,7 @@ public:
     ~CaptureSession() override;
 
 private:
-    enum class DeliveryMode { Raw, Encoded };
+    enum class DeliveryMode { Raw, Cpu, Encoded };
 
     Napi::Value Start(const Napi::CallbackInfo& info);
     Napi::Value Stop(const Napi::CallbackInfo& info);
@@ -32,17 +32,36 @@ private:
     Napi::Value SetBitrate(const Napi::CallbackInfo& info);
 
     void DispatchRawFrame(const CapturedFrame& frame);
+    void DispatchCpuFrame(const CapturedFrame& frame);
     void DispatchEncodedFrame(const CapturedFrame& frame);
     void OnEncodedOutput(const EncodedAccessUnit& au);
     void DispatchError(const char* component, long hr, const char* msg);
 
     void EnsureEncoderInitialized(std::uint32_t width, std::uint32_t height);
+    void EnsureStagingInitialized(std::uint32_t width, std::uint32_t height);
 
     D3DDevice                       device_;
     FramePool                       pool_;
     std::unique_ptr<ICaptureSource> source_;
 
     DeliveryMode                    delivery_{DeliveryMode::Raw};
+
+    // CPU readback (delivery=cpu) — ring of staging textures with event
+    // fences. Each frame: copy → fence → try drain previous slot.
+    struct StagingSlot {
+        Microsoft::WRL::ComPtr<ID3D11Texture2D> tex;
+        Microsoft::WRL::ComPtr<ID3D11Query>     fence;
+        std::atomic<std::uint32_t>              in_js{0}; // 1 while held by JS
+        std::uint32_t                           index{0};
+        std::uint32_t                           width{0};
+        std::uint32_t                           height{0};
+        std::uint64_t                           timestamp_ns{0};
+    };
+    static constexpr std::uint32_t kStagingCount = 4;
+    StagingSlot                     staging_[kStagingCount]{};
+    std::uint32_t                   staging_w_{0};
+    std::uint32_t                   staging_h_{0};
+    std::uint32_t                   staging_write_idx_{0};
 
     // Encoded path.
     std::unique_ptr<VideoProcessor> color_;

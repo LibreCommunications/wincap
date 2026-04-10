@@ -18,6 +18,7 @@
 #include <atomic>
 #include <mutex>
 #include <queue>
+#include <vector>
 
 #include <wrl/client.h>
 #include <wrl/implements.h>
@@ -43,7 +44,9 @@ public:
     void Start(EncodedCallback out, EncoderErrorCallback err) override;
     void Stop() override;
 
-    void EncodeFrame(ID3D11Texture2D* nv12, std::uint64_t timestamp_ns) override;
+    void EncodeFrame(ID3D11Texture2D* surface,
+                     std::uint64_t timestamp_ns,
+                     const FrameOptions& opts = {}) override;
     void RequestKeyframe() override;
     void SetBitrate(std::uint32_t bps) override;
 
@@ -74,7 +77,9 @@ private:
     // Input queue: capture thread pushes, NeedInput drains.
     struct PendingInput {
         Microsoft::WRL::ComPtr<ID3D11Texture2D> tex;
-        std::uint64_t                           timestamp_ns;
+        std::uint64_t                           timestamp_ns{0};
+        FrameOptions                            opts{};
+        std::vector<std::int32_t>               roi_storage; // owns the rect data
     };
     std::mutex                pending_mutex_;
     std::queue<PendingInput>  pending_;

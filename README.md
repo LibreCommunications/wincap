@@ -49,4 +49,4 @@ npm run build:ts
 
 ## License
 
-MIT © LibreCommunications
+AGPL-3.0-or-later © LibreCommunications. See [LICENSE](./LICENSE).

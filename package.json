@@ -55,6 +55,6 @@
     "type": "git",
     "url": "git+https://github.com/LibreCommunications/wincap.git"
   },
-  "license": "MIT",
+  "license": "AGPL-3.0-or-later",
   "author": "LibreCommunications"
 }

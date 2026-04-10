@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <utility>
 
 #include <audioclientactivationparams.h>
 #include <mmdeviceapi.h>
@@ -146,12 +147,30 @@ void WasapiLoopback::Initialize() {
                   AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM |
                   AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY;
 
-    // 20 ms buffer (in 100-ns units) — small enough for low latency, big
-    // enough that the WASAPI thread can ride out a JS GC pause.
-    constexpr REFERENCE_TIME kBufferDurationHns = 20 * 10000;
+    HRESULT hr = E_FAIL;
 
-    HRESULT hr = client_->Initialize(
-        AUDCLNT_SHAREMODE_SHARED, flags, kBufferDurationHns, 0, mix_format, nullptr);
+    // Prefer IAudioClient3::InitializeSharedAudioStream which exposes the
+    // engine's true minimum periodicity (often 3 ms on modern HW). Falls
+    // back to a 20 ms buffer if the host doesn't support it (process
+    // loopback path frequently doesn't).
+    Microsoft::WRL::ComPtr<IAudioClient3> client3;
+    if (opts_.mode == LoopbackMode::SystemDefault &&
+        SUCCEEDED(client_.As(&client3))) {
+        UINT32 default_period = 0, fundamental = 0, min_period = 0, max_period = 0;
+        if (SUCCEEDED(client3->GetSharedModeEnginePeriod(
+                mix_format, &default_period, &fundamental, &min_period, &max_period))) {
+            const UINT32 period = std::max<UINT32>(min_period, fundamental);
+            hr = client3->InitializeSharedAudioStream(
+                flags, period, mix_format, nullptr);
+        }
+    }
+
+    if (FAILED(hr)) {
+        // 20 ms buffer (in 100-ns units) fallback.
+        constexpr REFERENCE_TIME kBufferDurationHns = 20 * 10000;
+        hr = client_->Initialize(
+            AUDCLNT_SHAREMODE_SHARED, flags, kBufferDurationHns, 0, mix_format, nullptr);
+    }
     if (FAILED(hr)) {
         if (mix_format && opts_.mode == LoopbackMode::SystemDefault) CoTaskMemFree(mix_format);
         WINCAP_THROW_IF_FAILED("wasapi_loopback", hr);

@@ -97,10 +97,10 @@ export class CaptureSession extends EventEmitter {
     );
   }
 
-  override on<K extends keyof CaptureEvents>(event: K, listener: CaptureEvents[K]): this {
+  on<K extends keyof CaptureEvents>(event: K, listener: CaptureEvents[K]): this {
     return super.on(event, listener as (...args: unknown[]) => void);
   }
-  override emit<K extends keyof CaptureEvents>(event: K, ...args: Parameters<CaptureEvents[K]>): boolean {
+  emit<K extends keyof CaptureEvents>(event: K, ...args: Parameters<CaptureEvents[K]>): boolean {
     return super.emit(event, ...args);
   }
 
@@ -144,10 +144,10 @@ export class AudioSession extends EventEmitter {
     );
   }
 
-  override on<K extends keyof AudioEvents>(event: K, listener: AudioEvents[K]): this {
+  on<K extends keyof AudioEvents>(event: K, listener: AudioEvents[K]): this {
     return super.on(event, listener as (...args: unknown[]) => void);
   }
-  override emit<K extends keyof AudioEvents>(event: K, ...args: Parameters<AudioEvents[K]>): boolean {
+  emit<K extends keyof AudioEvents>(event: K, ...args: Parameters<AudioEvents[K]>): boolean {
     return super.emit(event, ...args);
   }
 

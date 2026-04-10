@@ -8,7 +8,8 @@ void VideoProcessor::Init(ID3D11Device5*        device,
                           ID3D11DeviceContext4* context,
                           UINT                  width,
                           UINT                  height,
-                          DXGI_FORMAT           output_format) {
+                          DXGI_FORMAT           output_format,
+                          ColorSpace            cs) {
     width_         = width;
     height_        = height;
     output_format_ = output_format;
@@ -33,19 +34,41 @@ void VideoProcessor::Init(ID3D11Device5*        device,
     WINCAP_THROW_IF_FAILED("video_processor",
         video_device_->CreateVideoProcessor(enumerator_.Get(), 0, processor_.GetAddressOf()));
 
-    // Use Rec.709 (SDR). For HDR (P010) we'd configure BT.2020 + PQ here.
-    D3D11_VIDEO_PROCESSOR_COLOR_SPACE in_cs{};
-    in_cs.RGB_Range          = 0;        // 0..255 (full range)
-    in_cs.YCbCr_Matrix       = 1;        // BT.709
-    in_cs.YCbCr_xvYCC        = 0;
-    in_cs.Nominal_Range      = D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE_0_255;
-    video_context_->VideoProcessorSetStreamColorSpace(processor_.Get(), 0, &in_cs);
+    if (cs == ColorSpace::Rec709Sdr) {
+        D3D11_VIDEO_PROCESSOR_COLOR_SPACE in_cs{};
+        in_cs.RGB_Range     = 0;                         // full range
+        in_cs.YCbCr_Matrix  = 1;                         // BT.709
+        in_cs.Nominal_Range = D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE_0_255;
+        video_context_->VideoProcessorSetStreamColorSpace(processor_.Get(), 0, &in_cs);
 
-    D3D11_VIDEO_PROCESSOR_COLOR_SPACE out_cs{};
-    out_cs.RGB_Range     = 0;
-    out_cs.YCbCr_Matrix  = 1;
-    out_cs.Nominal_Range = D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE_16_235; // studio range YUV
-    video_context_->VideoProcessorSetOutputColorSpace(processor_.Get(), &out_cs);
+        D3D11_VIDEO_PROCESSOR_COLOR_SPACE out_cs{};
+        out_cs.RGB_Range     = 0;
+        out_cs.YCbCr_Matrix  = 1;
+        out_cs.Nominal_Range = D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE_16_235;
+        video_context_->VideoProcessorSetOutputColorSpace(processor_.Get(), &out_cs);
+    } else {
+        // HDR10: scRGB linear float input → BT.2020 PQ studio-range YUV.
+        // We use the richer DXGI_COLOR_SPACE path via VideoContext1.
+        Microsoft::WRL::ComPtr<ID3D11VideoContext2> ctx2;
+        if (SUCCEEDED(video_context_.As(&ctx2))) {
+            ctx2->VideoProcessorSetStreamColorSpace1(
+                processor_.Get(), 0,
+                DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709 /* scRGB */);
+            ctx2->VideoProcessorSetOutputColorSpace1(
+                processor_.Get(),
+                DXGI_COLOR_SPACE_YCBCR_STUDIO_G2084_LEFT_P2020 /* BT.2020 PQ */);
+        } else {
+            // Fallback (rare on Win10 1809+).
+            D3D11_VIDEO_PROCESSOR_COLOR_SPACE in_cs{};
+            in_cs.RGB_Range = 0; in_cs.YCbCr_Matrix = 0;
+            in_cs.Nominal_Range = D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE_0_255;
+            video_context_->VideoProcessorSetStreamColorSpace(processor_.Get(), 0, &in_cs);
+            D3D11_VIDEO_PROCESSOR_COLOR_SPACE out_cs{};
+            out_cs.RGB_Range = 0; out_cs.YCbCr_Matrix = 0;
+            out_cs.Nominal_Range = D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE_16_235;
+            video_context_->VideoProcessorSetOutputColorSpace(processor_.Get(), &out_cs);
+        }
+    }
 
     RECT full{0, 0, static_cast<LONG>(width), static_cast<LONG>(height)};
     video_context_->VideoProcessorSetStreamSourceRect(processor_.Get(), 0, TRUE, &full);

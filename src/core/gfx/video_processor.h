@@ -21,13 +21,19 @@ public:
     VideoProcessor(const VideoProcessor&) = delete;
     VideoProcessor& operator=(const VideoProcessor&) = delete;
 
+    enum class ColorSpace {
+        Rec709Sdr,    // BGRA8 → NV12, BT.709 limited
+        Rec2020Pq,    // R16G16B16A16Float → P010, BT.2020 PQ (HDR10)
+    };
+
     // Initialise for a specific input → output size + format pair.
     // `output_format` is typically DXGI_FORMAT_NV12 (SDR) or P010 (HDR).
     void Init(ID3D11Device5*        device,
               ID3D11DeviceContext4* context,
               UINT                  width,
               UINT                  height,
-              DXGI_FORMAT           output_format);
+              DXGI_FORMAT           output_format,
+              ColorSpace            cs = ColorSpace::Rec709Sdr);
 
     // Convert one frame. `dest` must be a texture created with the
     // matching format and BIND_RENDER_TARGET. The video processor

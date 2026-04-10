@@ -7,8 +7,16 @@
 
 #include <cstdint>
 #include <functional>
+#include <vector>
 
 namespace wincap {
+
+struct DirtyRect {
+    std::int32_t left{0};
+    std::int32_t top{0};
+    std::int32_t right{0};
+    std::int32_t bottom{0};
+};
 
 struct CapturedFrame {
     FrameSlot*    slot{nullptr};      // borrowed; consumer must Release()
@@ -16,6 +24,9 @@ struct CapturedFrame {
     std::uint32_t height{0};
     std::uint64_t timestamp_ns{0};    // QPC epoch
     bool          size_changed{false};
+    // Dirty regions reported by WGC (24H2+) or DDup. Empty when the
+    // source can't provide them — consumer should treat as full-frame.
+    std::vector<DirtyRect> dirty_rects;
 };
 
 using FrameCallback = std::function<void(const CapturedFrame&)>;

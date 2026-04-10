@@ -19,8 +19,8 @@ namespace wincap {
 
 namespace {
 
-constexpr GUID kMfvCodecH264 = MFVideoFormat_H264;
-constexpr GUID kMfvCodecHEVC = MFVideoFormat_HEVC;
+// MFVideoFormat_* are extern const GUIDs (not constexpr-initialisable),
+// so we just reference them directly at use sites.
 
 void SetUInt32(ICodecAPI* api, REFGUID prop, ULONG v) {
     VARIANT var{};
@@ -96,8 +96,8 @@ void MfEncoder::Initialize(ID3D11Device5* device, const EncoderConfig& cfg) {
         dxgi_manager_->ResetDevice(device_.Get(), dxgi_token_));
 
     // 2. Locate a vendor-matched hardware async MFT.
-    GUID subtype = kMfvCodecH264;
-    if (cfg.codec == VideoCodec::HEVC) subtype = kMfvCodecHEVC;
+    GUID subtype = MFVideoFormat_H264;
+    if (cfg.codec == VideoCodec::HEVC) subtype = MFVideoFormat_HEVC;
     if (cfg.codec == VideoCodec::AV1)  subtype = MFVideoFormat_AV1;
 
     MFT_REGISTER_TYPE_INFO out_info{ MFMediaType_Video, subtype };

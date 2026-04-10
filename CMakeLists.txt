@@ -104,6 +104,10 @@ if(MSVC)
     target_compile_options(${PROJECT_NAME} PRIVATE
         /W4 /permissive- /Zc:__cplusplus /utf-8 /EHsc /await
         /Gy /Gw
+        # node-addon-api's napi-inl.h trips C4127 (conditional expression
+        # is constant) under /W4. It's third-party; disable globally
+        # rather than peppering pragma push/pops at every include site.
+        /wd4127
         $<$<CONFIG:Release>:/O2 /Oi /GL>
     )
     if(WINCAP_ENABLE_WERROR)

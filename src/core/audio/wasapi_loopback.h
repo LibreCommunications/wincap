@@ -17,6 +17,13 @@
 #include <thread>
 #include <vector>
 
+// windows.h must precede the WASAPI / mmreg headers (they depend on
+// windef macros like NEAR/FAR/WORD).
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+
 #include <wrl/client.h>
 #include <audioclient.h>
 #include <mmdeviceapi.h>

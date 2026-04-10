@@ -27,6 +27,7 @@
 #include <mfidl.h>
 #include <mftransform.h>
 #include <codecapi.h>
+#include <icodecapi.h>
 
 namespace wincap {
 

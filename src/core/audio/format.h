@@ -5,6 +5,13 @@
 
 #include <cstdint>
 
+// mmreg.h / audioclient.h depend on NEAR/FAR/WORD/etc from windef.h.
+// windows.h must come first or every struct member tokenises as garbage.
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+
 #include <mmreg.h>
 #include <audioclient.h>
 

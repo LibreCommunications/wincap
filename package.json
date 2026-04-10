@@ -9,13 +9,11 @@
     "src/",
     "prebuilds/",
     "CMakeLists.txt",
-    "binding.gyp",
     "scripts/",
     "README.md",
     "LICENSE"
   ],
   "scripts": {
-    "install": "node-gyp-build",
     "build:native": "cmake-js compile --runtime=electron --runtime-version=41.1.0 --arch=x64",
     "build:native:node": "cmake-js compile --arch=x64",
     "build:ts": "tsc -p tsconfig.json",

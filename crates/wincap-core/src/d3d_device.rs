@@ -62,7 +62,7 @@ impl D3DDevice {
 
         // Multithread-protect the immediate context.
         if let Ok(mt) = context.cast::<windows::Win32::Graphics::Direct3D10::ID3D10Multithread>() {
-            unsafe { mt.SetMultithreadProtected(true) };
+            let _ = unsafe { mt.SetMultithreadProtected(true) };
         }
 
         // Create the WinRT projection used by WGC.

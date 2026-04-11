@@ -1,7 +1,7 @@
 use windows::core::Interface;
 use windows::Win32::Foundation::RECT;
 use windows::Win32::Graphics::Direct3D11::*;
-use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT, DXGI_RATIONAL};
+use windows::Win32::Graphics::Dxgi::Common::DXGI_RATIONAL;
 
 use crate::error::{hr_call, WincapResult};
 
@@ -32,7 +32,6 @@ impl VideoProcessor {
         context: &ID3D11DeviceContext4,
         width: u32,
         height: u32,
-        _output_format: DXGI_FORMAT,
         cs: ColorSpace,
     ) -> WincapResult<Self> {
         let video_device: ID3D11VideoDevice = hr_call!("video_processor", device.cast());
@@ -61,9 +60,6 @@ impl VideoProcessor {
             hr_call!("video_processor", unsafe { video_device.CreateVideoProcessor(&enumerator, 0) });
 
         if cs == ColorSpace::Rec709Sdr {
-            let _in_cs = D3D11_VIDEO_PROCESSOR_COLOR_SPACE {
-                _bitfield: 0, // RGB_Range=0 (full), YCbCr_Matrix=1 (BT.709)
-            };
             // Set bits: Usage=0, RGB_Range=0, YCbCr_Matrix=1, YCbCr_xvYCC=0, Nominal_Range=0_255
             let mut in_cs_val = D3D11_VIDEO_PROCESSOR_COLOR_SPACE::default();
             in_cs_val._bitfield = 0b0_0_01_0_01; // YCbCr_Matrix=1, Nominal_Range=0_255
@@ -170,7 +166,7 @@ impl VideoProcessor {
             InputFrameOrField: 0,
             PastFrames: 0,
             FutureFrames: 0,
-            pInputSurface: unsafe { std::mem::transmute_copy(&in_view) },
+            pInputSurface: std::mem::ManuallyDrop::new(Some(in_view)),
             ..Default::default()
         };
 

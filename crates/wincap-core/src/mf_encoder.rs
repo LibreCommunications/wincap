@@ -9,7 +9,7 @@ use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Direct3D11::*;
 use windows::Win32::Graphics::Dxgi::*;
 use windows::Win32::Media::MediaFoundation::*;
-use windows::Win32::System::Com::*;
+use windows::Win32::System::Com::CoTaskMemFree;
 
 use crate::error::{hr_call, WincapError, WincapResult};
 
@@ -90,6 +90,7 @@ struct EncoderInner {
     pending: Mutex<VecDeque<PendingInput>>,
     on_output: Mutex<Option<EncodedCallback>>,
     on_error: Mutex<Option<EncoderErrorCallback>>,
+    callback: Mutex<Option<IMFAsyncCallback>>,
 }
 
 // SAFETY: All interior mutation is behind Mutex or atomics.
@@ -188,7 +189,7 @@ impl MfEncoder {
         let activates = if activate_count > 0 && !activate_ptr.is_null() {
             let slice = unsafe { std::slice::from_raw_parts(activate_ptr, activate_count as usize) };
             let vec: Vec<IMFActivate> = slice.iter().filter_map(|opt| opt.clone()).collect();
-            unsafe { windows::Win32::System::Com::CoTaskMemFree(Some(activate_ptr as *const _)) };
+            unsafe { CoTaskMemFree(Some(activate_ptr as *const _)) };
             vec
         } else {
             Vec::new()
@@ -310,12 +311,15 @@ impl MfEncoder {
             pending: Mutex::new(VecDeque::new()),
             on_output: Mutex::new(None),
             on_error: Mutex::new(None),
+            callback: Mutex::new(None),
         });
 
         let callback_impl = AsyncCallback {
             inner: Arc::clone(&inner),
         };
         let callback: IMFAsyncCallback = callback_impl.into();
+
+        *inner.callback.lock() = Some(callback.clone());
 
         self.inner = Some(inner);
         self.callback = Some(callback);
@@ -434,17 +438,11 @@ fn invoke_impl(inner: &Arc<EncoderInner>, result: &IMFAsyncResult) {
         }
     }
 
-    // Continue listening for events.
+    // Continue listening for events, reusing the stored callback.
     if inner.running.load(Ordering::Acquire) {
-        // We need to get the callback again. Unfortunately we don't have it here,
-        // so we use BeginGetEvent with the event generator's existing callback.
-        // This is a limitation — we'll store the callback in the inner.
-        // For now, we re-create a callback pointing to this inner.
-        let cb: IMFAsyncCallback = AsyncCallback {
-            inner: Arc::clone(inner),
+        if let Some(cb) = inner.callback.lock().as_ref() {
+            let _ = unsafe { inner.event_gen.BeginGetEvent(cb, None) };
         }
-        .into();
-        let _ = unsafe { inner.event_gen.BeginGetEvent(&cb, None) };
     }
 }
 

@@ -79,7 +79,7 @@ pub fn list_displays() -> Vec<DisplaySource> {
     }
 
     unsafe {
-        EnumDisplayMonitors(
+        let _ = EnumDisplayMonitors(
             None,
             None,
             Some(callback),

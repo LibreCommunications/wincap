@@ -287,9 +287,15 @@ fn thread_main(inner: Arc<WasapiInner>, stop_event: HANDLE) {
                 }
             };
 
-            {
+            // Copy audio data into the pool buffer, then release the mutex
+            // BEFORE invoking the callback to avoid blocking the Pro Audio
+            // thread if the consumer (e.g. JS) is slow.
+            let silent = (flags & (AUDCLNT_BUFFERFLAGS_SILENT.0 as u32)) != 0;
+            let discontinuity =
+                (flags & (AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY.0 as u32)) != 0;
+
+            let data = {
                 let mut buf = inner.pool[slot_idx].data.lock();
-                let silent = (flags & (AUDCLNT_BUFFERFLAGS_SILENT.0 as u32)) != 0;
                 if silent {
                     buf[..needed_floats].fill(0.0);
                 } else {
@@ -298,32 +304,30 @@ fn thread_main(inner: Arc<WasapiInner>, stop_event: HANDLE) {
                     };
                     buf[..needed_floats].copy_from_slice(src);
                 }
+                buf.as_ptr()
+                // buf lock dropped here
+            };
 
-                let discontinuity =
-                    (flags & (AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY.0 as u32)) != 0;
+            let inner_clone = Arc::clone(&inner);
+            let chunk = AudioChunk {
+                data,
+                frame_count: frames,
+                channels: format.channels,
+                sample_rate: format.sample_rate,
+                timestamp_ns: clock::ticks_to_ns(qpc_pos),
+                silent,
+                discontinuity,
+                release: Box::new(move || {
+                    inner_clone.pool[slot_idx]
+                        .in_use
+                        .store(0, Ordering::Release);
+                }),
+            };
 
-                let data = buf.as_ptr();
-                let inner_clone = Arc::clone(&inner);
-                let chunk = AudioChunk {
-                    data,
-                    frame_count: frames,
-                    channels: format.channels,
-                    sample_rate: format.sample_rate,
-                    timestamp_ns: clock::ticks_to_ns(qpc_pos),
-                    silent,
-                    discontinuity,
-                    release: Box::new(move || {
-                        inner_clone.pool[slot_idx]
-                            .in_use
-                            .store(0, Ordering::Release);
-                    }),
-                };
-
-                if let Some(cb) = inner.cb.lock().as_ref() {
-                    cb(chunk);
-                } else {
-                    inner.pool[slot_idx].in_use.store(0, Ordering::Release);
-                }
+            if let Some(cb) = inner.cb.lock().as_ref() {
+                cb(chunk);
+            } else {
+                inner.pool[slot_idx].in_use.store(0, Ordering::Release);
             }
 
             let _ = unsafe { capture.ReleaseBuffer(frames) };
@@ -370,8 +374,10 @@ fn activate(opts: &WasapiLoopbackOptions) -> WincapResult<IAudioClient> {
     };
 
     let mut prop_var = windows::Win32::System::Com::StructuredStorage::PROPVARIANT::default();
-    // We need to set up the PROPVARIANT as VT_BLOB.
-    // This is tricky with the windows crate; we'll use raw bytes.
+    // PROPVARIANT is a 24-byte struct on x64: 2-byte vt, 6-byte padding, 16-byte data.
+    // VT_BLOB stores { cbSize: u32, pBlobData: *mut u8 } in the data union at offset 8.
+    // The windows crate does not expose safe VT_BLOB construction, so manual layout is necessary.
+    const _: () = assert!(std::mem::size_of::<windows::Win32::System::Com::StructuredStorage::PROPVARIANT>() >= 24);
     unsafe {
         let pv = &mut prop_var as *mut _ as *mut u8;
         // VT_BLOB = 0x41

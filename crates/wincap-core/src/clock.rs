@@ -6,7 +6,8 @@ static FREQUENCY: OnceLock<u64> = OnceLock::new();
 fn frequency() -> u64 {
     *FREQUENCY.get_or_init(|| {
         let mut freq = 0i64;
-        unsafe { QueryPerformanceFrequency(&mut freq).unwrap() };
+        unsafe { QueryPerformanceFrequency(&mut freq) }
+            .expect("QueryPerformanceFrequency failed — QPC is not supported on this system");
         freq as u64
     })
 }
@@ -19,7 +20,8 @@ pub fn init() {
 /// Current QPC counter value.
 pub fn now_ticks() -> u64 {
     let mut ticks = 0i64;
-    unsafe { QueryPerformanceCounter(&mut ticks).unwrap() };
+    unsafe { QueryPerformanceCounter(&mut ticks) }
+        .expect("QueryPerformanceCounter failed — QPC is not supported on this system");
     ticks as u64
 }
 

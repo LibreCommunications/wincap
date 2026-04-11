@@ -15,7 +15,8 @@ use wincap_core::clock;
 use wincap_core::d3d_device::D3DDevice;
 use wincap_core::error::WincapError;
 use wincap_core::frame_pool::FramePool;
-use wincap_core::mf_encoder::{EncoderConfig, VideoCodec};
+use wincap_core::mf_encoder::{EncoderConfig, FrameOptions, MfEncoder, VideoCodec};
+use wincap_core::video_processor::{ColorSpace, VideoProcessor};
 use wincap_core::wgc_source::{WgcOptions, WgcSource};
 use windows::Win32::Graphics::Direct3D11::*;
 
@@ -64,6 +65,10 @@ struct FramePayload {
     height: u32,
     format: &'static str,
     size_changed: bool,
+    /// CPU-readback pixel data (only populated in Cpu delivery mode).
+    data: Option<Vec<u8>>,
+    /// Row stride in bytes (only populated in Cpu delivery mode).
+    stride: u32,
 }
 
 struct EncodedPayload {
@@ -86,11 +91,24 @@ enum DeliveryMode {
 }
 
 struct CaptureInner {
-    device: DummySend<D3DDevice>,
-    pool: DummySend<FramePool>,
+    device: DummySend<Box<D3DDevice>>,
+    pool: DummySend<Box<FramePool>>,
     source: Option<DummySend<WgcSource>>,
     delivery: DeliveryMode,
     enc_cfg: EncoderConfig,
+    // Encoder pipeline (lazy-initialized on first frame for Encoded mode)
+    color: Option<DummySend<VideoProcessor>>,
+    encoder: Option<DummySend<MfEncoder>>,
+    enc_width: u32,
+    enc_height: u32,
+    // NV12/P010 texture used as intermediate for color conversion
+    nv12_texture: Option<ID3D11Texture2D>,
+    // CPU readback state
+    staging_textures: Vec<ID3D11Texture2D>,
+    staging_fences: Vec<ID3D11Query>,
+    staging_w: u32,
+    staging_h: u32,
+    staging_idx: u32,
 }
 
 // D3DDevice, FramePool, WgcSource are Send via their unsafe impl Send
@@ -136,6 +154,11 @@ impl CaptureSession {
             obj.set("height", ctx.value.height)?;
             obj.set("format", ctx.value.format)?;
             obj.set("sizeChanged", ctx.value.size_changed)?;
+            obj.set("stride", ctx.value.stride)?;
+            if let Some(data) = ctx.value.data {
+                let buf = ctx.env.create_buffer_with_data(data)?;
+                obj.set("data", buf.into_raw())?;
+            }
             Ok(vec![obj])
         })?;
 
@@ -183,8 +206,9 @@ impl CaptureSession {
             }
         }
 
-        // Create D3D device and frame pool.
-        let device = D3DDevice::create(LUID::default()).map_err(to_napi_err)?;
+        // Create D3D device and frame pool on the heap so WgcSource's
+        // raw pointers remain valid after we move them into the Mutex.
+        let device = Box::new(D3DDevice::create(LUID::default()).map_err(to_napi_err)?);
 
         let hdr_capture = delivery == DeliveryMode::Encoded && enc_cfg.hdr10;
         let format = if hdr_capture {
@@ -206,7 +230,7 @@ impl CaptureSession {
             MiscFlags: 0,
         };
 
-        let mut pool = FramePool::new();
+        let mut pool = Box::new(FramePool::new());
         pool.init(&device.device, 4, desc, false).map_err(to_napi_err)?;
 
         let mut wgc_opts = WgcOptions::default();
@@ -216,6 +240,8 @@ impl CaptureSession {
             wgc_opts.pixel_format = DirectXPixelFormat::R16G16B16A16Float;
         }
 
+        // WgcSource stores raw pointers to device/pool. Since both are Box-allocated,
+        // their heap addresses are stable even after moving into the Mutex.
         let mut source = WgcSource::new(&device, &pool, wgc_opts);
 
         match opts.source.kind.as_str() {
@@ -241,6 +267,16 @@ impl CaptureSession {
                 source: Some(DummySend(source)),
                 delivery,
                 enc_cfg,
+                color: None,
+                encoder: None,
+                enc_width: 0,
+                enc_height: 0,
+                nv12_texture: None,
+                staging_textures: Vec::new(),
+                staging_fences: Vec::new(),
+                staging_w: 0,
+                staging_h: 0,
+                staging_idx: 0,
             }),
             on_frame: on_frame_tsfn,
             on_encoded: on_encoded_tsfn,
@@ -259,10 +295,11 @@ impl CaptureSession {
         }
 
         let mut inner = self.inner.lock();
+        let delivery = inner.delivery;
+
         let source = inner.source.as_mut()
             .ok_or_else(|| Error::from_reason("capture source not initialized"))?;
 
-        let _on_frame = self.on_frame.clone();
         let on_error_cb = self.on_error.clone();
 
         let err_cb = Box::new(move |component: &'static str, hr: i32, msg: &str| {
@@ -275,19 +312,384 @@ impl CaptureSession {
                 ThreadsafeFunctionCallMode::NonBlocking,
             );
         });
-
         let on_frame_clone = self.on_frame.clone();
+        let on_encoded_clone = self.on_encoded.clone();
+        let on_error_clone = self.on_error.clone();
+
+        // Wrap raw pointers in a Send+Sync newtype so the closure can be Send+Sync.
+        // SAFETY: CaptureSession (and thus these atomics + mutex) outlive the WgcSource
+        // because we call source.stop() in stop()/drop before dropping inner.
+        #[derive(Clone, Copy)]
+        struct RawSend(*const ());
+        unsafe impl Send for RawSend {}
+        unsafe impl Sync for RawSend {}
+        impl RawSend {
+            fn ptr(self) -> *const () { self.0 }
+        }
+
+        let inner_ptr = RawSend(&self.inner as *const parking_lot::Mutex<CaptureInner> as *const ());
+        let delivered_ptr = RawSend(&self.delivered_frames as *const AtomicU64 as *const ());
+        let encoded_ptr = RawSend(&self.encoded_units as *const AtomicU64 as *const ());
+
         let frame_cb = Box::new(move |frame: wincap_core::wgc_source::CapturedFrame<'_>| {
-            let _ = on_frame_clone.call(
-                FramePayload {
-                    timestamp_ns: frame.timestamp_ns,
-                    width: frame.width,
-                    height: frame.height,
-                    format: "bgra8",
-                    size_changed: frame.size_changed,
-                },
-                ThreadsafeFunctionCallMode::NonBlocking,
-            );
+            let inner_mutex = unsafe { &*(inner_ptr.ptr() as *const parking_lot::Mutex<CaptureInner>) };
+            let delivered = unsafe { &*(delivered_ptr.ptr() as *const AtomicU64) };
+            let encoded_units = unsafe { &*(encoded_ptr.ptr() as *const AtomicU64) };
+
+            match delivery {
+                DeliveryMode::Raw => {
+                    // Raw mode: send metadata only, auto-release slot immediately.
+                    let _ = on_frame_clone.call(
+                        FramePayload {
+                            timestamp_ns: frame.timestamp_ns,
+                            width: frame.width,
+                            height: frame.height,
+                            format: "bgra8",
+                            size_changed: frame.size_changed,
+                            data: None,
+                            stride: 0,
+                        },
+                        ThreadsafeFunctionCallMode::NonBlocking,
+                    );
+                    delivered.fetch_add(1, Ordering::Relaxed);
+                    // Slot is auto-released when CapturedFrame drops (via SlotGuard in wgc_source),
+                    // but wgc_source disarms the guard and passes ownership to us.
+                    // We must release the slot manually.
+                    let guard = inner_mutex.lock();
+                    guard.pool.release(frame.slot);
+                }
+                DeliveryMode::Cpu => {
+                    // CPU readback: copy to staging texture, map, send bytes.
+                    let mut guard = inner_mutex.lock();
+                    let w = frame.width;
+                    let h = frame.height;
+
+                    // Recreate staging textures on size change.
+                    if w != guard.staging_w || h != guard.staging_h {
+                        guard.staging_textures.clear();
+                        guard.staging_fences.clear();
+
+                        let staging_desc = D3D11_TEXTURE2D_DESC {
+                            Width: w,
+                            Height: h,
+                            MipLevels: 1,
+                            ArraySize: 1,
+                            Format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                            SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+                            Usage: D3D11_USAGE_STAGING,
+                            BindFlags: 0,
+                            CPUAccessFlags: D3D11_CPU_ACCESS_READ.0 as u32,
+                            MiscFlags: 0,
+                        };
+
+                        for _ in 0..4 {
+                            let mut tex: Option<ID3D11Texture2D> = None;
+                            let hr = unsafe { guard.device.device.CreateTexture2D(&staging_desc, None, Some(&mut tex)) };
+                            if hr.is_err() || tex.is_none() {
+                                let _ = on_error_clone.call(
+                                    ErrorPayload {
+                                        component: "capture_session".to_string(),
+                                        hresult: hr.err().map(|e| e.code().0).unwrap_or(0),
+                                        message: "failed to create staging texture".to_string(),
+                                    },
+                                    ThreadsafeFunctionCallMode::NonBlocking,
+                                );
+                                guard.pool.release(frame.slot);
+                                return;
+                            }
+                            guard.staging_textures.push(tex.unwrap());
+
+                            let query_desc = D3D11_QUERY_DESC {
+                                Query: D3D11_QUERY_EVENT,
+                                MiscFlags: 0,
+                            };
+                            let mut fence: Option<ID3D11Query> = None;
+                            let _ = unsafe { guard.device.device.CreateQuery(&query_desc, Some(&mut fence)) };
+                            guard.staging_fences.push(fence.unwrap());
+                        }
+                        guard.staging_w = w;
+                        guard.staging_h = h;
+                        guard.staging_idx = 0;
+                    }
+
+                    let idx = guard.staging_idx as usize % guard.staging_textures.len();
+                    guard.staging_idx = guard.staging_idx.wrapping_add(1);
+
+                    let staging = &guard.staging_textures[idx];
+                    let fence = &guard.staging_fences[idx];
+
+                    // Copy from pool texture to staging.
+                    let box_ = D3D11_BOX {
+                        left: 0, top: 0, front: 0,
+                        right: w, bottom: h, back: 1,
+                    };
+                    unsafe {
+                        guard.device.context.CopySubresourceRegion(
+                            staging, 0, 0, 0, 0,
+                            &frame.slot.texture, 0, Some(&box_),
+                        );
+                        guard.device.context.End(fence);
+                        guard.device.context.Flush();
+                    }
+
+                    // Release the BGRA slot back to the pool immediately.
+                    guard.pool.release(frame.slot);
+
+                    // Wait for GPU to finish the copy.
+                    loop {
+                        let mut data: u32 = 0;
+                        let hr = unsafe {
+                            guard.device.context.GetData(
+                                fence,
+                                Some(&mut data as *mut u32 as *mut _),
+                                std::mem::size_of::<u32>() as u32,
+                                D3D11_ASYNC_GETDATA_DONOTFLUSH.0 as u32,
+                            )
+                        };
+                        if hr.is_ok() {
+                            break;
+                        }
+                        std::thread::yield_now();
+                    }
+
+                    // Map and read pixels.
+                    let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
+                    let map_result = unsafe {
+                        guard.device.context.Map(
+                            staging,
+                            0,
+                            D3D11_MAP_READ,
+                            0,
+                            Some(&mut mapped),
+                        )
+                    };
+
+                    if map_result.is_err() {
+                        let _ = on_error_clone.call(
+                            ErrorPayload {
+                                component: "capture_session".to_string(),
+                                hresult: map_result.err().map(|e| e.code().0).unwrap_or(0),
+                                message: "Map staging texture failed".to_string(),
+                            },
+                            ThreadsafeFunctionCallMode::NonBlocking,
+                        );
+                        return;
+                    }
+
+                    let row_pitch = mapped.RowPitch;
+                    let total_bytes = row_pitch * h;
+                    let pixels = unsafe {
+                        std::slice::from_raw_parts(mapped.pData as *const u8, total_bytes as usize)
+                    }.to_vec();
+
+                    unsafe { guard.device.context.Unmap(staging, 0); }
+
+                    let ts = frame.timestamp_ns;
+                    let sc = frame.size_changed;
+                    // Drop the mutex guard before calling TSFN.
+                    drop(guard);
+
+                    let _ = on_frame_clone.call(
+                        FramePayload {
+                            timestamp_ns: ts,
+                            width: w,
+                            height: h,
+                            format: "bgra8",
+                            size_changed: sc,
+                            data: Some(pixels),
+                            stride: row_pitch,
+                        },
+                        ThreadsafeFunctionCallMode::NonBlocking,
+                    );
+                    delivered.fetch_add(1, Ordering::Relaxed);
+                }
+                DeliveryMode::Encoded => {
+                    // Encoded mode: color-convert BGRA->NV12, then encode.
+                    let mut guard = inner_mutex.lock();
+                    let w = frame.width;
+                    let h = frame.height;
+
+                    // Lazy-init or re-init encoder on size change.
+                    if guard.enc_width != w || guard.enc_height != h {
+                        // Tear down old encoder if any.
+                        if let Some(ref enc) = guard.encoder {
+                            enc.stop();
+                        }
+                        guard.encoder = None;
+                        guard.color = None;
+                        guard.nv12_texture = None;
+
+                        let cs = if guard.enc_cfg.hdr10 {
+                            ColorSpace::Rec2020Pq
+                        } else {
+                            ColorSpace::Rec709Sdr
+                        };
+
+                        let nv12_format = if guard.enc_cfg.hdr10 {
+                            DXGI_FORMAT_P010
+                        } else {
+                            DXGI_FORMAT_NV12
+                        };
+
+                        // Create VideoProcessor for color conversion.
+                        match VideoProcessor::new(
+                            &guard.device.device,
+                            &guard.device.context,
+                            w, h,
+                            cs,
+                        ) {
+                            Ok(vp) => guard.color = Some(DummySend(vp)),
+                            Err(e) => {
+                                let _ = on_error_clone.call(
+                                    ErrorPayload {
+                                        component: "video_processor".to_string(),
+                                        hresult: 0,
+                                        message: e.to_string(),
+                                    },
+                                    ThreadsafeFunctionCallMode::NonBlocking,
+                                );
+                                guard.pool.release(frame.slot);
+                                return;
+                            }
+                        }
+
+                        // Create NV12/P010 intermediate texture.
+                        let nv12_desc = D3D11_TEXTURE2D_DESC {
+                            Width: w,
+                            Height: h,
+                            MipLevels: 1,
+                            ArraySize: 1,
+                            Format: nv12_format,
+                            SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+                            Usage: D3D11_USAGE_DEFAULT,
+                            BindFlags: (D3D11_BIND_RENDER_TARGET.0 | D3D11_BIND_SHADER_RESOURCE.0) as u32,
+                            CPUAccessFlags: 0,
+                            MiscFlags: 0,
+                        };
+                        let mut nv12_tex: Option<ID3D11Texture2D> = None;
+                        let hr = unsafe { guard.device.device.CreateTexture2D(&nv12_desc, None, Some(&mut nv12_tex)) };
+                        if hr.is_err() || nv12_tex.is_none() {
+                            let _ = on_error_clone.call(
+                                ErrorPayload {
+                                    component: "capture_session".to_string(),
+                                    hresult: hr.err().map(|e| e.code().0).unwrap_or(0),
+                                    message: "failed to create NV12 texture".to_string(),
+                                },
+                                ThreadsafeFunctionCallMode::NonBlocking,
+                            );
+                            guard.pool.release(frame.slot);
+                            return;
+                        }
+                        guard.nv12_texture = nv12_tex;
+
+                        // Create MfEncoder.
+                        let mut enc_cfg = guard.enc_cfg.clone();
+                        enc_cfg.width = w;
+                        enc_cfg.height = h;
+
+                        match MfEncoder::new() {
+                            Ok(mut enc) => {
+                                if let Err(e) = enc.initialize(&guard.device.device, enc_cfg) {
+                                    let _ = on_error_clone.call(
+                                        ErrorPayload {
+                                            component: "mf_encoder".to_string(),
+                                            hresult: 0,
+                                            message: e.to_string(),
+                                        },
+                                        ThreadsafeFunctionCallMode::NonBlocking,
+                                    );
+                                    guard.pool.release(frame.slot);
+                                    return;
+                                }
+
+                                // Wire up encoder output callback -> on_encoded TSFN.
+                                let on_enc = on_encoded_clone.clone();
+                                let enc_counter = encoded_units;
+                                let out_cb = Box::new(move |au: wincap_core::mf_encoder::EncodedAccessUnit| {
+                                    let _ = on_enc.call(
+                                        EncodedPayload {
+                                            data: au.data,
+                                            timestamp_ns: au.timestamp_ns,
+                                            keyframe: au.keyframe,
+                                        },
+                                        ThreadsafeFunctionCallMode::NonBlocking,
+                                    );
+                                    // SAFETY: same lifetime guarantee as other atomics here.
+                                    enc_counter.fetch_add(1, Ordering::Relaxed);
+                                });
+
+                                let on_err = on_error_clone.clone();
+                                let err_enc_cb = Box::new(move |component: &'static str, hr: i32, msg: &str| {
+                                    let _ = on_err.call(
+                                        ErrorPayload {
+                                            component: component.to_string(),
+                                            hresult: hr,
+                                            message: msg.to_string(),
+                                        },
+                                        ThreadsafeFunctionCallMode::NonBlocking,
+                                    );
+                                });
+
+                                if let Err(e) = enc.start(out_cb, err_enc_cb) {
+                                    let _ = on_error_clone.call(
+                                        ErrorPayload {
+                                            component: "mf_encoder".to_string(),
+                                            hresult: 0,
+                                            message: e.to_string(),
+                                        },
+                                        ThreadsafeFunctionCallMode::NonBlocking,
+                                    );
+                                    guard.pool.release(frame.slot);
+                                    return;
+                                }
+
+                                guard.encoder = Some(DummySend(enc));
+                            }
+                            Err(e) => {
+                                let _ = on_error_clone.call(
+                                    ErrorPayload {
+                                        component: "mf_encoder".to_string(),
+                                        hresult: 0,
+                                        message: e.to_string(),
+                                    },
+                                    ThreadsafeFunctionCallMode::NonBlocking,
+                                );
+                                guard.pool.release(frame.slot);
+                                return;
+                            }
+                        }
+
+                        guard.enc_width = w;
+                        guard.enc_height = h;
+                    }
+
+                    // Color convert BGRA -> NV12.
+                    let nv12_tex = guard.nv12_texture.as_ref().unwrap();
+                    if let Some(ref color) = guard.color {
+                        if let Err(e) = color.convert(&frame.slot.texture, nv12_tex) {
+                            let _ = on_error_clone.call(
+                                ErrorPayload {
+                                    component: "video_processor".to_string(),
+                                    hresult: 0,
+                                    message: e.to_string(),
+                                },
+                                ThreadsafeFunctionCallMode::NonBlocking,
+                            );
+                            guard.pool.release(frame.slot);
+                            return;
+                        }
+                    }
+
+                    // Encode the NV12 frame.
+                    if let Some(ref enc) = guard.encoder {
+                        enc.encode_frame(nv12_tex, frame.timestamp_ns, FrameOptions::default());
+                    }
+
+                    // Release the BGRA slot back to the pool.
+                    guard.pool.release(frame.slot);
+                    delivered.fetch_add(1, Ordering::Relaxed);
+                }
+            }
         });
 
         source.start(frame_cb, err_cb).map_err(to_napi_err)?;
@@ -303,6 +705,10 @@ impl CaptureSession {
         if let Some(ref mut source) = inner.source {
             source.stop();
         }
+        // Stop encoder if running.
+        if let Some(ref enc) = inner.encoder {
+            enc.stop();
+        }
         Ok(())
     }
 
@@ -317,12 +723,18 @@ impl CaptureSession {
 
     #[napi]
     pub fn request_keyframe(&self) {
-        // Encoder integration will be added in follow-up.
+        let inner = self.inner.lock();
+        if let Some(ref enc) = inner.encoder {
+            enc.request_keyframe();
+        }
     }
 
     #[napi]
-    pub fn set_bitrate(&self, _bps: u32) {
-        // Encoder integration will be added in follow-up.
+    pub fn set_bitrate(&self, bps: u32) {
+        let inner = self.inner.lock();
+        if let Some(ref enc) = inner.encoder {
+            enc.set_bitrate(bps);
+        }
     }
 }
 

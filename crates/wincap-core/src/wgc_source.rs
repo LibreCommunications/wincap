@@ -15,6 +15,28 @@ use crate::d3d_device::D3DDevice;
 use crate::error::{hr_call, WincapError, WincapResult};
 use crate::frame_pool::{FramePool, FrameSlot};
 
+/// RAII guard that auto-releases a `FrameSlot` back to the pool on drop
+/// unless explicitly disarmed. Prevents slot leaks on early `?` returns.
+struct SlotGuard<'a> {
+    slot: &'a FrameSlot,
+    pool: &'a FramePool,
+    armed: bool,
+}
+impl<'a> SlotGuard<'a> {
+    fn new(slot: &'a FrameSlot, pool: &'a FramePool) -> Self {
+        Self { slot, pool, armed: true }
+    }
+    fn disarm(mut self) -> &'a FrameSlot {
+        self.armed = false;
+        self.slot
+    }
+}
+impl Drop for SlotGuard<'_> {
+    fn drop(&mut self) {
+        if self.armed { self.pool.release(self.slot); }
+    }
+}
+
 /// Dirty rectangle for ROI tracking.
 #[derive(Debug, Clone, Copy)]
 pub struct DirtyRect {
@@ -140,14 +162,24 @@ impl WgcSource {
             });
         }
 
-        let size = hr_call!("wgc_source", self.item.as_ref().unwrap().Size());
+        let item_ref = self.item.as_ref().ok_or_else(|| WincapError::General {
+            component: "wgc_source",
+            message: "capture item not initialised".into(),
+        })?;
+        let size = hr_call!("wgc_source", item_ref.Size());
         let w = size.Width as u32;
         let h = size.Height as u32;
 
         self.recreate_frame_pool(w, h)?;
 
-        let item = self.item.as_ref().unwrap();
-        let wgc_pool = self.wgc_pool.as_ref().unwrap();
+        let item = self.item.as_ref().ok_or_else(|| WincapError::General {
+            component: "wgc_source",
+            message: "capture item not initialised".into(),
+        })?;
+        let wgc_pool = self.wgc_pool.as_ref().ok_or_else(|| WincapError::General {
+            component: "wgc_source",
+            message: "frame pool not created".into(),
+        })?;
 
         // FrameArrived handler
         let inner = Arc::clone(&self.inner);
@@ -273,6 +305,7 @@ impl WgcSource {
                 Some(s) => s,
                 None => return Ok(()), // pool exhausted, drop frame
             };
+            let guard = SlotGuard::new(slot, pool);
 
             let device = unsafe { &*inner.device };
             let surface = hr_call!("wgc_source", frame.Surface());
@@ -288,7 +321,7 @@ impl WgcSource {
             };
             unsafe {
                 device.context.CopySubresourceRegion(
-                    &slot.texture,
+                    &guard.slot.texture,
                     0,
                     0,
                     0,
@@ -297,13 +330,17 @@ impl WgcSource {
                     0,
                     Some(&box_),
                 );
-                device.context.End(&slot.fence);
+                device.context.End(&guard.slot.fence);
             }
 
             let timestamp_ns = {
                 let ts = hr_call!("wgc_source", frame.SystemRelativeTime());
                 clock::hundred_ns_to_ns(ts.Duration)
             };
+
+            // Disarm the guard — slot ownership transfers to the callback
+            // (or we release it manually if no callback is set).
+            let slot = guard.disarm();
 
             let captured = CapturedFrame {
                 slot,

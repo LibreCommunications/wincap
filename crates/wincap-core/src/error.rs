@@ -42,21 +42,6 @@ impl From<windows::core::Error> for WincapError {
 
 pub type WincapResult<T> = Result<T, WincapError>;
 
-/// Check a Windows HRESULT-returning call. On failure, returns a
-/// `WincapError::HResult` with the component tag and stringified expression.
-macro_rules! hr_check {
-    ($component:expr, $expr:expr) => {{
-        let result: ::windows::core::Result<()> = $expr;
-        if let Err(e) = result {
-            return Err($crate::error::WincapError::HResult {
-                component: $component,
-                hr: e.code().0,
-                context: stringify!($expr).to_string(),
-            });
-        }
-    }};
-}
-
 /// Call a Windows function that returns a `windows::core::Result<T>`,
 /// unwrapping on success or returning a `WincapError` on failure.
 macro_rules! hr_call {

@@ -2,8 +2,8 @@
   "name": "@librecord/wincap",
   "version": "0.1.0",
   "description": "Native Windows screen capture with audio for Electron — WGC + WASAPI loopback (Rust/napi-rs)",
-  "main": "index.js",
-  "types": "index.d.ts",
+  "main": "lib.js",
+  "types": "lib.d.ts",
   "napi": {
     "name": "wincap",
     "triples": {
@@ -17,6 +17,8 @@
   "files": [
     "index.js",
     "index.d.ts",
+    "lib.js",
+    "lib.d.ts",
     "src/",
     "crates/",
     "Cargo.toml",

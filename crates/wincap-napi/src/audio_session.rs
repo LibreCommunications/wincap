@@ -1,4 +1,5 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Arc;
 
 use napi::bindgen_prelude::*;
 use napi::threadsafe_function::{
@@ -53,15 +54,19 @@ impl std::ops::DerefMut for WasapiSend {
     fn deref_mut(&mut self) -> &mut WasapiLoopback { &mut self.0 }
 }
 
+struct AudioStats {
+    delivered: AtomicU64,
+    dropped: AtomicU64,
+    discontinuities: AtomicU64,
+}
+
 #[napi]
 pub struct AudioSession {
     source: parking_lot::Mutex<WasapiSend>,
     on_chunk: ThreadsafeFunction<ChunkPayload, ErrorStrategy::Fatal>,
     on_error: ThreadsafeFunction<ErrorPayload, ErrorStrategy::Fatal>,
     running: AtomicBool,
-    delivered_chunks: AtomicU64,
-    dropped_chunks: AtomicU64,
-    discontinuities: AtomicU64,
+    stats: Arc<AudioStats>,
 }
 
 #[napi]
@@ -117,9 +122,11 @@ impl AudioSession {
             on_chunk: on_chunk_tsfn,
             on_error: on_error_tsfn,
             running: AtomicBool::new(false),
-            delivered_chunks: AtomicU64::new(0),
-            dropped_chunks: AtomicU64::new(0),
-            discontinuities: AtomicU64::new(0),
+            stats: Arc::new(AudioStats {
+                delivered: AtomicU64::new(0),
+                dropped: AtomicU64::new(0),
+                discontinuities: AtomicU64::new(0),
+            }),
         })
     }
 
@@ -132,13 +139,11 @@ impl AudioSession {
         let on_chunk = self.on_chunk.clone();
         let on_error = self.on_error.clone();
 
-        let delivered = unsafe { &*(&self.delivered_chunks as *const AtomicU64) };
-        let dropped = unsafe { &*(&self.dropped_chunks as *const AtomicU64) };
-        let discs = unsafe { &*(&self.discontinuities as *const AtomicU64) };
+        let stats = Arc::clone(&self.stats);
 
         let chunk_cb: AudioCallback = Box::new(move |chunk: AudioChunk| {
             if chunk.discontinuity {
-                discs.fetch_add(1, Ordering::Relaxed);
+                stats.discontinuities.fetch_add(1, Ordering::Relaxed);
             }
 
             let byte_count = chunk.frame_count as usize * chunk.channels as usize * 4;
@@ -161,10 +166,10 @@ impl AudioSession {
 
             match status {
                 napi::Status::Ok => {
-                    delivered.fetch_add(1, Ordering::Relaxed);
+                    stats.delivered.fetch_add(1, Ordering::Relaxed);
                 }
                 _ => {
-                    dropped.fetch_add(1, Ordering::Relaxed);
+                    stats.dropped.fetch_add(1, Ordering::Relaxed);
                 }
             }
 
@@ -201,9 +206,9 @@ impl AudioSession {
     #[napi]
     pub fn get_stats(&self) -> AudioStatsJs {
         AudioStatsJs {
-            delivered_chunks: BigInt::from(self.delivered_chunks.load(Ordering::Relaxed)),
-            dropped_chunks: BigInt::from(self.dropped_chunks.load(Ordering::Relaxed)),
-            discontinuities: BigInt::from(self.discontinuities.load(Ordering::Relaxed)),
+            delivered_chunks: BigInt::from(self.stats.delivered.load(Ordering::Relaxed)),
+            dropped_chunks: BigInt::from(self.stats.dropped.load(Ordering::Relaxed)),
+            discontinuities: BigInt::from(self.stats.discontinuities.load(Ordering::Relaxed)),
         }
     }
 }

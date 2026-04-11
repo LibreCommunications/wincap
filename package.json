@@ -1,6 +1,6 @@
 {
   "name": "@librecord/wincap",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Native Windows screen capture with audio for Electron — WGC + WASAPI loopback (Rust/napi-rs)",
   "main": "lib.js",
   "types": "lib.d.ts",

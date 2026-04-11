@@ -13,6 +13,9 @@ export interface Rect {
 export interface DisplaySource {
   kind: string
   monitorHandle: bigint
+  /** Numeric display index matching Electron's desktopCapturer display_id. */
+  displayId: string
+  /** Human-readable name (monitor model or "Display N (WxH)"). */
   name: string
   primary: boolean
   bounds: Rect
@@ -22,6 +25,8 @@ export interface WindowSource {
   hwnd: bigint
   title: string
   pid: number
+  /** Executable filename (e.g. "discord.exe"). */
+  processName: string
   bounds: Rect
 }
 export interface Capabilities {

@@ -12,6 +12,7 @@ export interface Rect {
 export interface DisplaySource {
   kind: 'display';
   monitorHandle: bigint;
+  displayId: string;
   name: string;
   primary: boolean;
   bounds: Rect;
@@ -22,6 +23,7 @@ export interface WindowSource {
   hwnd: bigint;
   title: string;
   pid: number;
+  processName: string;
   bounds: Rect;
 }
 

@@ -7,7 +7,7 @@ use napi::threadsafe_function::{
 use napi::JsFunction;
 use napi_derive::napi;
 use windows::Win32::Foundation::*;
-use windows::Win32::Graphics::Gdi::HMONITOR;
+use windows::Win32::Graphics::Gdi::{HMONITOR, MONITORINFO};
 use windows::Win32::Graphics::Dxgi::Common::*;
 use windows::Graphics::DirectX::DirectXPixelFormat;
 
@@ -101,6 +101,8 @@ struct CaptureInner {
     encoder: Option<DummySend<MfEncoder>>,
     enc_width: u32,
     enc_height: u32,
+    /// Set after encoder init fails to prevent retry spam every frame.
+    encoder_failed: bool,
     // NV12/P010 texture used as intermediate for color conversion
     nv12_texture: Option<ID3D11Texture2D>,
     // CPU readback state
@@ -217,9 +219,41 @@ impl CaptureSession {
             DXGI_FORMAT_B8G8R8A8_UNORM
         };
 
+        // Determine capture resolution from the source to allocate
+        // properly sized pool textures.
+        let (init_w, init_h) = match opts.source.kind.as_str() {
+            "display" => {
+                let handle = opts.source.monitor_handle.as_ref()
+                    .ok_or_else(|| Error::from_reason("display source requires monitorHandle"))?;
+                let (_, val, _) = handle.get_u64();
+                let hmon = HMONITOR(val as *mut _);
+                let mut mi = MONITORINFO::default();
+                mi.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
+                if unsafe { windows::Win32::Graphics::Gdi::GetMonitorInfoW(hmon, &mut mi) }.as_bool() {
+                    let r = mi.rcMonitor;
+                    ((r.right - r.left) as u32, (r.bottom - r.top) as u32)
+                } else {
+                    (1920, 1080) // fallback
+                }
+            }
+            "window" => {
+                let handle = opts.source.hwnd.as_ref()
+                    .ok_or_else(|| Error::from_reason("window source requires hwnd"))?;
+                let (_, val, _) = handle.get_u64();
+                let hwnd = HWND(val as *mut _);
+                let mut r = RECT::default();
+                if unsafe { windows::Win32::UI::WindowsAndMessaging::GetWindowRect(hwnd, &mut r) }.is_ok() {
+                    (((r.right - r.left).max(1)) as u32, ((r.bottom - r.top).max(1)) as u32)
+                } else {
+                    (1920, 1080)
+                }
+            }
+            _ => (1920, 1080),
+        };
+
         let desc = D3D11_TEXTURE2D_DESC {
-            Width: 1,
-            Height: 1,
+            Width: init_w,
+            Height: init_h,
             MipLevels: 1,
             ArraySize: 1,
             Format: format,
@@ -271,6 +305,7 @@ impl CaptureSession {
                 encoder: None,
                 enc_width: 0,
                 enc_height: 0,
+                encoder_failed: false,
                 nv12_texture: None,
                 staging_textures: Vec::new(),
                 staging_fences: Vec::new(),
@@ -509,6 +544,12 @@ impl CaptureSession {
                     let w = frame.width;
                     let h = frame.height;
 
+                    // If encoder already failed, don't retry — just drop frames silently.
+                    if guard.encoder_failed {
+                        guard.pool.release(frame.slot);
+                        return;
+                    }
+
                     // Lazy-init or re-init encoder on size change.
                     if guard.enc_width != w || guard.enc_height != h {
                         // Tear down old encoder if any.
@@ -548,6 +589,7 @@ impl CaptureSession {
                                     },
                                     ThreadsafeFunctionCallMode::NonBlocking,
                                 );
+                                guard.encoder_failed = true;
                                 guard.pool.release(frame.slot);
                                 return;
                             }
@@ -577,6 +619,7 @@ impl CaptureSession {
                                 },
                                 ThreadsafeFunctionCallMode::NonBlocking,
                             );
+                            guard.encoder_failed = true;
                             guard.pool.release(frame.slot);
                             return;
                         }
@@ -598,6 +641,7 @@ impl CaptureSession {
                                         },
                                         ThreadsafeFunctionCallMode::NonBlocking,
                                     );
+                                    guard.encoder_failed = true;
                                     guard.pool.release(frame.slot);
                                     return;
                                 }
@@ -639,6 +683,7 @@ impl CaptureSession {
                                         },
                                         ThreadsafeFunctionCallMode::NonBlocking,
                                     );
+                                    guard.encoder_failed = true;
                                     guard.pool.release(frame.slot);
                                     return;
                                 }
@@ -654,6 +699,7 @@ impl CaptureSession {
                                     },
                                     ThreadsafeFunctionCallMode::NonBlocking,
                                 );
+                                guard.encoder_failed = true;
                                 guard.pool.release(frame.slot);
                                 return;
                             }

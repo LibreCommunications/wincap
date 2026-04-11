@@ -19,7 +19,7 @@
     "index.d.ts",
     "lib.js",
     "lib.d.ts",
-    "src/",
+    "*.node",
     "crates/",
     "Cargo.toml",
     "README.md",

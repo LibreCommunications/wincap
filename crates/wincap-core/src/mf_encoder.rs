@@ -87,6 +87,10 @@ struct EncoderInner {
     codec_api: Option<ICodecAPI>,
     running: AtomicBool,
     force_keyframe: AtomicBool,
+    /// True when the MFT fired METransformNeedInput but we had no frames.
+    /// When encode_frame pushes a new frame and this is true, we must
+    /// call ProcessInput directly instead of waiting for another event.
+    needs_input: AtomicBool,
     pending: Mutex<VecDeque<PendingInput>>,
     on_output: Mutex<Option<EncodedCallback>>,
     on_error: Mutex<Option<EncoderErrorCallback>>,
@@ -208,20 +212,23 @@ impl MfEncoder {
         let mft: IMFTransform =
             hr_call!("mf_encoder", unsafe { activates[pick].ActivateObject() });
 
-        // 3. Bind DXGI manager.
-        hr_call!("mf_encoder", unsafe {
-            mft.ProcessMessage(
-                MFT_MESSAGE_SET_D3D_MANAGER,
-                &manager as *const _ as usize,
-            )
-        });
-
-        // 4. Async unlock + low-latency.
+        // 3. Async unlock FIRST — hardware async MFTs reject all
+        //    ProcessMessage calls until unlocked.
         let attrs: IMFAttributes = hr_call!("mf_encoder", unsafe { mft.GetAttributes() });
         hr_call!("mf_encoder", unsafe {
             attrs.SetUINT32(&MF_TRANSFORM_ASYNC_UNLOCK, 1)
         });
         hr_call!("mf_encoder", unsafe { attrs.SetUINT32(&MF_LOW_LATENCY, 1) });
+
+        // 4. Bind DXGI manager. ProcessMessage expects the raw IUnknown*
+        // as a usize (the COM interface pointer value).
+        use windows::core::Interface as _;
+        hr_call!("mf_encoder", unsafe {
+            mft.ProcessMessage(
+                MFT_MESSAGE_SET_D3D_MANAGER,
+                manager.as_raw() as usize,
+            )
+        });
 
         // 5. Output media type.
         let out_type: IMFMediaType = hr_call!("mf_encoder", unsafe { MFCreateMediaType() });
@@ -308,6 +315,7 @@ impl MfEncoder {
             codec_api,
             running: AtomicBool::new(false),
             force_keyframe: AtomicBool::new(false),
+            needs_input: AtomicBool::new(false),
             pending: Mutex::new(VecDeque::new()),
             on_output: Mutex::new(None),
             on_error: Mutex::new(None),
@@ -382,6 +390,19 @@ impl MfEncoder {
             timestamp_ns,
             opts,
         });
+
+        // If the MFT already fired METransformNeedInput but we had no
+        // frames at the time, feed it now directly.
+        if inner.needs_input.swap(false, Ordering::AcqRel) {
+            if let Err(e) = on_need_input(inner) {
+                if let Some(cb) = inner.on_error.lock().as_ref() {
+                    match &e {
+                        WincapError::HResult { component, hr, context } => cb(component, *hr, context),
+                        WincapError::General { component, message } => cb(component, 0, message),
+                    }
+                }
+            }
+        }
     }
 
     pub fn request_keyframe(&self) {
@@ -448,8 +469,16 @@ fn invoke_impl(inner: &Arc<EncoderInner>, result: &IMFAsyncResult) {
 
 fn on_need_input(inner: &EncoderInner) -> WincapResult<()> {
     let input = match inner.pending.lock().pop_front() {
-        Some(v) => v,
-        None => return Ok(()),
+        Some(v) => {
+            inner.needs_input.store(false, Ordering::Release);
+            v
+        }
+        None => {
+            // No frames queued yet. Mark that we're waiting so
+            // encode_frame() can feed the MFT directly when a frame arrives.
+            inner.needs_input.store(true, Ordering::Release);
+            return Ok(());
+        }
     };
 
     let sample: IMFSample = hr_call!("mf_encoder", unsafe { MFCreateSample() });

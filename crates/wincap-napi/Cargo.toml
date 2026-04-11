@@ -1,0 +1,19 @@
+[package]
+name = "wincap-napi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wincap-core = { path = "../wincap-core" }
+napi = { version = "2", features = ["napi8", "tokio_rt", "serde-json"] }
+napi-derive = "2"
+windows = { workspace = true }
+windows-core = { workspace = true }
+parking_lot = { workspace = true }
+
+[build-dependencies]
+napi-build = "2"

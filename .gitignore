@@ -1,14 +1,23 @@
 node_modules/
-dist/
-build/
-prebuilds/
 *.node
 *.tsbuildinfo
+
+# Rust
+target/
+Cargo.lock
+
+# IDE
 .vs/
 .vscode/
 .idea/
 *.user
 *.suo
+.cache/
+
+# Old C++ artifacts
+build/
+cmake-build-debug/
+dist/
+prebuilds/
 *.pdb
 *.ilk
-.cache/

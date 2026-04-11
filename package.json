@@ -1,46 +1,42 @@
 {
   "name": "@librecord/wincap",
-  "version": "0.0.1",
-  "description": "Native Windows screen capture with audio for Electron — WGC + WASAPI loopback (C++/N-API)",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
+  "version": "0.2.0",
+  "description": "Native Windows screen capture with audio for Electron — WGC + WASAPI loopback (Rust/napi-rs)",
+  "main": "lib.js",
+  "types": "lib.d.ts",
+  "napi": {
+    "name": "wincap",
+    "triples": {
+      "defaults": false,
+      "additional": [
+        "x86_64-pc-windows-msvc",
+        "aarch64-pc-windows-msvc"
+      ]
+    }
+  },
   "files": [
-    "dist/",
-    "src/",
-    "prebuilds/",
-    "CMakeLists.txt",
-    "scripts/",
+    "index.js",
+    "index.d.ts",
+    "lib.js",
+    "lib.d.ts",
+    "*.node",
+    "crates/",
+    "Cargo.toml",
     "README.md",
     "LICENSE"
   ],
   "scripts": {
-    "build:native": "cmake-js compile --runtime=electron --runtime-version=41.1.1 --arch=x64",
-    "build:native:node": "cmake-js compile --arch=x64",
-    "build:ts": "tsc -p tsconfig.json",
-    "build": "npm run build:native && npm run build:ts",
-    "prebuild": "node scripts/prebuild.js",
-    "clean": "rimraf build dist prebuilds",
-    "test": "vitest run",
-    "test:unit": "ctest --test-dir build --output-on-failure",
-    "lint": "eslint src/ts test"
-  },
-  "binary": {
-    "napi_versions": [8]
-  },
-  "dependencies": {
-    "node-addon-api": "^8.2.0",
-    "node-gyp-build": "^4.8.4"
+    "build": "napi build --platform --release --cargo-cwd crates/wincap-napi",
+    "build:debug": "napi build --platform --cargo-cwd crates/wincap-napi",
+    "prepublishOnly": "napi prepublish -t npm",
+    "clean": "rimraf *.node dist"
   },
   "devDependencies": {
-    "@types/node": "^22.10.0",
-    "cmake-js": "^7.3.0",
-    "prebuildify": "^6.0.1",
-    "rimraf": "^6.0.1",
-    "typescript": "^5.7.0",
-    "vitest": "^2.1.0"
+    "@napi-rs/cli": "^2.18.0",
+    "rimraf": "^6.0.1"
   },
   "engines": {
-    "node": ">=24"
+    "node": ">=18"
   },
   "os": [
     "win32"

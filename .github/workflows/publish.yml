@@ -10,8 +10,12 @@ permissions:
 
 jobs:
   build:
+    name: build (${{ matrix.target }})
     runs-on: windows-2025
-
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [x86_64-pc-windows-msvc]
     steps:
       - uses: actions/checkout@v4
 
@@ -19,37 +23,60 @@ jobs:
         with:
           node-version: '24'
 
-      - name: Configure MSVC
-        uses: ilammy/msvc-dev-cmd@v1
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
         with:
-          arch: x64
+          targets: ${{ matrix.target }}
 
-      - run: npm install --no-audit --no-fund
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
 
-      - name: Build native module
-        run: npx cmake-js compile --arch=x64 --CDWINCAP_ENABLE_WERROR=ON
+      - name: Build native module (release)
+        run: npx napi build --platform --release --cargo-cwd crates/wincap-napi --target ${{ matrix.target }}
 
-      - name: Build TypeScript
-        run: npm run build:ts
+      - name: Smoke test
+        shell: pwsh
+        run: |
+          node -e "const w = require('./lib'); console.log('version:', w.version()); console.log('capabilities:', JSON.stringify(w.getCapabilities()));"
 
       - name: Stage release artifacts
         shell: pwsh
         run: |
           $stage = "release-stage"
           New-Item -ItemType Directory -Force -Path $stage | Out-Null
-          $addon = Get-ChildItem -Path build -Filter wincap.node -Recurse | Select-Object -First 1
-          if (-not $addon) { throw "wincap.node not found under build/" }
-          Copy-Item $addon.FullName "$stage/wincap-x64.node"
-          if (Test-Path dist) { Compress-Archive -Path dist -DestinationPath "$stage/wincap-dist.zip" -Force }
+          $node = Get-ChildItem -Path . -Filter "*.node" -Depth 0 | Select-Object -First 1
+          if (-not $node) { throw ".node binary not found in project root" }
+          Copy-Item $node.FullName "$stage/$($node.Name)"
+          # Also include the JS facade and type definitions
+          Copy-Item lib.js "$stage/lib.js"
+          Copy-Item lib.d.ts "$stage/lib.d.ts"
+          Copy-Item index.js "$stage/index.js"
+          Copy-Item index.d.ts "$stage/index.d.ts"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wincap-${{ matrix.target }}
+          path: release-stage/
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+          merge-multiple: true
 
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        shell: pwsh
         run: |
-          gh release create ${{ github.ref_name }} `
-            release-stage/wincap-x64.node `
-            release-stage/wincap-dist.zip `
-            --repo ${{ github.repository }} `
-            --title "wincap ${{ github.ref_name }}" `
+          gh release create ${{ github.ref_name }} \
+            artifacts/* \
+            --repo ${{ github.repository }} \
+            --title "wincap ${{ github.ref_name }}" \
             --generate-notes

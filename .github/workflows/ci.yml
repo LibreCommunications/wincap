@@ -7,12 +7,12 @@ on:
 
 jobs:
   build:
-    name: build (${{ matrix.arch }})
+    name: build (${{ matrix.target }})
     runs-on: windows-2025
     strategy:
       fail-fast: false
       matrix:
-        arch: [x64]
+        target: [x86_64-pc-windows-msvc]
     steps:
       - uses: actions/checkout@v4
 
@@ -20,25 +20,18 @@ jobs:
         with:
           node-version: '24'
 
-      - name: Configure MSVC
-        uses: ilammy/msvc-dev-cmd@v1
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
         with:
-          arch: ${{ matrix.arch }}
+          targets: ${{ matrix.target }}
 
-      - name: Install deps
+      - name: Install dependencies
         run: npm install --no-audit --no-fund
 
-      - name: Build native (Node ABI)
-        run: npx cmake-js compile --arch=${{ matrix.arch }} --CDWINCAP_ENABLE_WERROR=ON
-
-      - name: Build TypeScript
-        run: npm run build:ts
+      - name: Build native module (release)
+        run: npx napi build --platform --release --cargo-cwd crates/wincap-napi --target ${{ matrix.target }}
 
       - name: Smoke test
         shell: pwsh
         run: |
-          $addon = Get-ChildItem -Path build -Filter wincap.node -Recurse | Select-Object -First 1
-          if (-not $addon) { throw "wincap.node not found under build/" }
-          Write-Host "Found addon: $($addon.FullName)"
-          node -e "const w = require('$($addon.FullName -replace '\\','/')'); console.log(w.version()); console.log(JSON.stringify(w.getCapabilities()));"
-
+          node -e "const w = require('./lib'); console.log('version:', w.version()); console.log('capabilities:', JSON.stringify(w.getCapabilities())); console.log('displays:', w.listDisplays().length);"

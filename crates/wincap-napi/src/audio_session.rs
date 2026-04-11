@@ -78,6 +78,7 @@ impl AudioSession {
         on_chunk: JsFunction,
         on_error: JsFunction,
     ) -> Result<Self> {
+        crate::ensure_com_initialized();
         let wopts = match opts.mode.as_str() {
             "systemLoopback" => WasapiLoopbackOptions {
                 mode: LoopbackMode::SystemDefault,

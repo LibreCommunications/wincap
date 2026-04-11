@@ -82,9 +82,11 @@ unsafe impl Send for WasapiLoopback {}
 unsafe impl Sync for WasapiLoopback {}
 
 // COM completion handler for ActivateAudioInterfaceAsync.
+// Stores the event handle as usize (not HANDLE) because HANDLE is !Send
+// in windows 0.62, and COM may invoke this on a different thread.
 #[implement(IActivateAudioInterfaceCompletionHandler)]
 struct ActivateHandler {
-    done_event: HANDLE,
+    done_raw: usize,
 }
 
 impl IActivateAudioInterfaceCompletionHandler_Impl for ActivateHandler_Impl {
@@ -92,7 +94,7 @@ impl IActivateAudioInterfaceCompletionHandler_Impl for ActivateHandler_Impl {
         &self,
         _operation: windows::core::Ref<'_, IActivateAudioInterfaceAsyncOperation>,
     ) -> windows::core::Result<()> {
-        unsafe { SetEvent(self.done_event) }
+        unsafe { SetEvent(HANDLE(self.done_raw as *mut _)) }
     }
 }
 
@@ -359,6 +361,7 @@ fn activate(opts: &WasapiLoopbackOptions) -> WincapResult<IAudioClient> {
     }
 
     // PROCESS_LOOPBACK (Win11 22000+)
+
     let mut params = AUDIOCLIENT_ACTIVATION_PARAMS {
         ActivationType: AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK,
         Anonymous: AUDIOCLIENT_ACTIVATION_PARAMS_0 {
@@ -373,20 +376,35 @@ fn activate(opts: &WasapiLoopbackOptions) -> WincapResult<IAudioClient> {
         },
     };
 
-    let mut prop_var = windows::Win32::System::Com::StructuredStorage::PROPVARIANT::default();
-    // PROPVARIANT is a 24-byte struct on x64: 2-byte vt, 6-byte padding, 16-byte data.
-    // VT_BLOB stores { cbSize: u32, pBlobData: *mut u8 } in the data union at offset 8.
-    // The windows crate does not expose safe VT_BLOB construction, so manual layout is necessary.
-    const _: () = assert!(std::mem::size_of::<windows::Win32::System::Com::StructuredStorage::PROPVARIANT>() >= 24);
-    unsafe {
-        let pv = &mut prop_var as *mut _ as *mut u8;
-        // VT_BLOB = 0x41
-        *(pv as *mut u16) = 0x41;
-        let blob_ptr = pv.add(8); // offset to blob data in PROPVARIANT
-        *(blob_ptr as *mut u32) = std::mem::size_of_val(&params) as u32; // cbSize
-        *(blob_ptr.add(std::mem::size_of::<u32>()) as *mut *mut u8) =
-            &mut params as *mut _ as *mut u8; // pBlobData
-    }
+    // Build PROPVARIANT with VT_BLOB pointing to the activation params.
+    use windows::Win32::System::Com::StructuredStorage::*;
+    use windows::Win32::System::Com::BLOB;
+    use windows::Win32::System::Variant::VT_BLOB;
+
+    let prop_var = PROPVARIANT {
+        Anonymous: PROPVARIANT_0 {
+            Anonymous: std::mem::ManuallyDrop::new(PROPVARIANT_0_0 {
+                vt: VT_BLOB,
+                wReserved1: 0,
+                wReserved2: 0,
+                wReserved3: 0,
+                Anonymous: PROPVARIANT_0_0_0 {
+                    blob: BLOB {
+                        cbSize: std::mem::size_of_val(&params) as u32,
+                        pBlobData: &mut params as *mut _ as *mut u8,
+                    },
+                },
+            }),
+        },
+    };
+
+    // Debug: dump raw PROPVARIANT bytes
+    let pv_bytes = unsafe {
+        std::slice::from_raw_parts(
+            &prop_var as *const _ as *const u8,
+            std::mem::size_of::<PROPVARIANT>(),
+        )
+    };
 
     let done_event =
         unsafe { CreateEventW(None, true, false, None) }.map_err(|e| WincapError::HResult {
@@ -395,14 +413,18 @@ fn activate(opts: &WasapiLoopbackOptions) -> WincapResult<IAudioClient> {
             context: "CreateEvent for activation".into(),
         })?;
 
+    // Use a raw event handle (usize) in the COM callback to avoid
+    // HANDLE's !Send constraint. HANDLE is just a kernel object index.
+    let done_raw = done_event.0 as usize;
+
     let handler: IActivateAudioInterfaceCompletionHandler =
-        ActivateHandler { done_event }.into();
+        ActivateHandler { done_raw }.into();
 
     let async_op = hr_call!("wasapi_loopback", unsafe {
         ActivateAudioInterfaceAsync(
-            PCWSTR(VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK.as_ptr()),
+            VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK,
             &IAudioClient::IID,
-            Some(&prop_var as *const _ as *const _),
+            Some(&prop_var as *const PROPVARIANT),
             &handler,
         )
     });
@@ -429,6 +451,13 @@ fn activate(opts: &WasapiLoopbackOptions) -> WincapResult<IAudioClient> {
     })?;
 
     let client: IAudioClient = hr_call!("wasapi_loopback", punk.cast());
+
+    // Prevent PROPVARIANT/async_op destructors from freeing the blob
+    // data (which points to stack-local `params`) or triggering COM
+    // release calls that cause heap corruption in Electron.
+    std::mem::forget(prop_var);
+    std::mem::forget(async_op);
+
     Ok(client)
 }
 

@@ -331,6 +331,7 @@ impl CaptureSession {
 
         let mut inner = self.inner.lock();
         let delivery = inner.delivery;
+        let fps = inner.enc_cfg.fps;
 
         let source = inner.source.as_mut()
             .ok_or_else(|| Error::from_reason("capture source not initialized"))?;
@@ -738,7 +739,7 @@ impl CaptureSession {
             }
         });
 
-        source.start(frame_cb, err_cb).map_err(to_napi_err)?;
+        source.start(frame_cb, err_cb, fps).map_err(to_napi_err)?;
         Ok(())
     }
 

@@ -27,5 +27,5 @@ pub(crate) fn ensure_com_initialized() {
 #[napi]
 pub fn version() -> String {
     ensure_com_initialized();
-    "0.3.0".to_string()
+    "0.3.1".to_string()
 }

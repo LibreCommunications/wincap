@@ -34,4 +34,4 @@ jobs:
       - name: Smoke test
         shell: pwsh
         run: |
-          node -e "const w = require('./lib'); console.log('version:', w.version()); console.log('capabilities:', JSON.stringify(w.getCapabilities())); console.log('displays:', w.listDisplays().length);"
+          node -e "const w = require('./lib'); console.log('version:', w.version()); console.log('AudioSession:', typeof w.AudioSession);"

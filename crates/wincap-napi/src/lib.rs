@@ -1,5 +1,3 @@
-mod sources;
-mod capture_session;
 mod audio_session;
 
 use napi_derive::napi;
@@ -18,7 +16,7 @@ pub(crate) fn ensure_com_initialized() {
             // 0 = S_OK, 1 = S_FALSE (already init), 0x80010106 = RPC_E_CHANGED_MODE (STA)
             let code = hr.0 as u32;
             if code != 0 && code != 1 && code != 0x80010106 {
-                eprintln!("wincap: CoInitializeEx failed: {:#010X}", code);
+                eprintln!("winaudio: CoInitializeEx failed: {:#010X}", code);
             }
         }
     });
@@ -27,5 +25,5 @@ pub(crate) fn ensure_com_initialized() {
 #[napi]
 pub fn version() -> String {
     ensure_com_initialized();
-    "0.3.1".to_string()
+    "0.4.0".to_string()
 }

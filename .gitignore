@@ -21,3 +21,5 @@ dist/
 prebuilds/
 *.pdb
 *.ilk
+/.claude/settings.local.json
+/.claude/webrtc_dump.json
